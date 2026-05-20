@@ -1,0 +1,3 @@
+[submodule "utils/xbee_c_library"]
+	path = utils/xbee_c_library
+	url = https://github.com/felixgalindo/xbee_c_library.git
