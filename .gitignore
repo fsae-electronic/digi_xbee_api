@@ -1,0 +1,16 @@
+# Build outputs
+Debug/
+
+
+# IDE / editor files
+.settings/
+.theia/
+.vscode/
+.ccsproject
+.clangd
+.cproject
+.project
+
+
+# Python cache files
+__pycache__/

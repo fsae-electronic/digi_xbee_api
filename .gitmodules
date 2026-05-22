@@ -1,3 +1,6 @@
 [submodule "utils/xbee_c_library"]
 	path = utils/xbee_c_library
 	url = https://github.com/felixgalindo/xbee_c_library.git
+[submodule "utils/xbee_ansic_library"]
+	path = utils/xbee_ansic_library
+	url = https://github.com/digidotcom/xbee_ansic_library.git

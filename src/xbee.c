@@ -180,7 +180,7 @@ XBeeAPIStatus_t XBeeParseFrame(const uint8_t *payload, size_t len,
             parsedFrame->atResponse.frameId = payload[1];
             parsedFrame->atResponse.atCmd[0] = payload[2];
             parsedFrame->atResponse.atCmd[1] = payload[3];
-            parsedFrame->atResponse.param = &payload[4];
+            parsedFrame->atResponse.param = (uint8_t *)&payload[4];
             parsedFrame->atResponse.paramLen = len - (1 + 1 + 1 + 1 + 1);
             break;
         case XBEE_API_TYPE_TX_STATUS:
@@ -193,7 +193,7 @@ XBeeAPIStatus_t XBeeParseFrame(const uint8_t *payload, size_t len,
             /* Frame: 0x90 | 64-bit src | 16-bit src | RSSI | Options | [RF Data] */
             parsedFrame->type = frameType;
             parsedFrame->rxPacket.rssi = payload[(1 + 8 + 2)];
-            parsedFrame->rxPacket.rfData = &payload[1 + 8 + 2 + 1 + 1];
+            parsedFrame->rxPacket.rfData = (uint8_t *)&payload[1 + 8 + 2 + 1 + 1];
             parsedFrame->rxPacket.rfDataLen = len - (1 + 8 + 2 + 1 + 1 + 1);
             break;
         default:
