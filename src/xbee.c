@@ -10,118 +10,133 @@
 
 // Headers /////////////////////////////////////////////////////////////////////////////
 
-#include <string.h>
-#include <stdio.h>
+// #include <string.h>
 
 #include "xbee.h"
 
 // Defines /////////////////////////////////////////////////////////////////////////////
 
-#define XBEE_API_START 0x7E
-#define API_FRAME_HEADER_LENGTH 3 // Header: StartDelimiter | Length MSB | Length LSB
+#define XBEE_API_START (0x7EU)
+// #define XBEE_API_DATA_HEAD_ID_SZ (1U) // FrameID
+
+#define XBEE_API_FUNC(func, frame) XBeeAPIStatus_t func(XBeeAPIFrame_t *frame)
 
 // Types ///////////////////////////////////////////////////////////////////////////////
 
 typedef enum
 {
-    RX_STATE_WAIT_START,
-    RX_STATE_READ_LEN,
-    // RX_STATE_READ_FRAME,
+    RX_STATE_START,
+    RX_STATE_LEN_MSB,
+    RX_STATE_LEN_LSB,
+    RX_STATE_DATA
+    // RX_STATE_CHECKSUM
 } RxState_t;
+
+// typedef struct
+// {
+//     XBeeAPITxStatusFrame_t txStatus;
+//     uint8_t isActive;
+// } XBeeAPITxTracker_t;
 
 // Local Variables /////////////////////////////////////////////////////////////////////
 
-/* Buffer for building frames: Header | [Payload] | Checksum */
-static uint8_t buf[3 + MAX_PAYLOAD_SIZE + 1];
-static uint8_t frameIdCntr = 1; // Frame ID counter for tracking frames
+// XBeeAPITxTracker_t txTable[XBEE_MAX_PENDING_FRAMES];
 
-// Tx Functions ////////////////////////////////////////////////////////////////////////
+// Prototypes //////////////////////////////////////////////////////////////////////////
+
+/**
+ * @brief Builders and parsers for specific XBee API frame types
+ * @param[in] frame Pointer to the XBeeAPIFrame_t structure to be built or parsed
+ * @return XBeeAPIStatus_t The status of the operation
+ */
+static XBEE_API_FUNC_PROTO(XBeeAPIBuildATCommand, frame);
+static XBEE_API_FUNC_PROTO(XBeeAPIBuildTxRequest, frame);
+static XBEE_API_FUNC_PROTO(XBeeAPIParseATResponse, frame);
+static XBEE_API_FUNC_PROTO(XBeeAPIParseTxStatus, frame);
+static XBEE_API_FUNC_PROTO(XBeeAPIParseRxPacket, frame);
 
 /**
  * @brief Calculates the checksum for a payload to ensure data integrity
- * @param[in] frame Pointer to the payload (starting after the header)
- * @param[in] len Length of the payload
+ * @param[in] frame Pointer to the data (starting after the frame header)
+ * @param[in] len Length of the data
  * @return uint8_t The calculated checksum value
  */
-static uint8_t XBeeChecksum(const uint8_t *payload, uint16_t len)
-{
-    uint8_t sum = 0;
-    for (uint16_t i = 0; i < len; i++)
-        sum += payload[i];
-    return 0xFF - sum;
-}
+static uint8_t XBeeChecksum(const uint8_t *payload, uint16_t len);
 
-/**
- * @brief Builds an XBee API frame with the given payload length
- * @param[in] len Length of the payload to be included in the frame
- * @note The frame is built in a static buffer and includes the header and checksum. The
- *       caller should ensure that the payload is correctly placed (after header) before
- *       calling this function, and that a space is available for FrameID at Header + 1.
- */
-static void XBeeBuildAPIFrame(size_t len)
-{
-    buf[0] = XBEE_API_START;
-    buf[1] = ((uint16_t)len >> 8) & 0xFF;
-    buf[2] = (uint16_t)len & 0xFF;
-    buf[API_FRAME_HEADER_LENGTH + 1] = frameIdCntr++; // Increment ID for each frame
-    if (frameIdCntr == 0)
-        frameIdCntr = 1; // Avoid frame ID 0 which is reserved for no response
-    buf[API_FRAME_HEADER_LENGTH + len] = XBeeChecksum(buf + API_FRAME_HEADER_LENGTH, len);
-}
+// Tx Functions ////////////////////////////////////////////////////////////////////////
 
-XBeeAPIStatus_t XBeeBuildAT(const char *atCmd, const uint8_t *param, uint8_t paramLen,
-                            uint8_t **frame, uint8_t *frameID)
+XBEE_API_FUNC(XBeeAPIBuildFrame, frame)
 {
-    /* Payload: 0x08 | FrameID | ATChar0 | ATChar1 | [ParamBytes] */
-    XBeeAPIStatus_t status = XBEE_API_TX_SUCCESS;
-    if (paramLen > (MAX_PAYLOAD_SIZE - 4))
-        status = XBEE_API_TX_ERROR_FRAME_TOO_LARGE;
-    else
+    XBeeAPIStatus_t status;
+    uint8_t csum;
+
+    switch (frame->type)
     {
-        size_t idx = 3;
-        buf[idx++] = XBEE_API_TYPE_AT_COMMAND;
-        idx++; // Leave space for FrameID
-        buf[idx++] = atCmd[0];
-        buf[idx++] = atCmd[1];
-        if (param && paramLen)
-        {
-            memcpy(&buf[idx], param, paramLen);
-            idx += paramLen;
-        }
-        XBeeBuildAPIFrame(idx);
-        *frame = buf;
-        *frameID = frameIdCntr;
+    case XBEE_API_TYPE_AT_COMMAND:
+        status = XBeeBuildAT(frame);
+        break;
+    case XBEE_API_TYPE_TX_REQUEST:
+        status = XBeeBuildTxRequest(frame);
+        break;
+    }
+
+    if (status == XBEE_API_TX_SUCCESS)
+    {
+        frame->buffer[0] = XBEE_API_START;
+        memcpy(&frame->buffer[1], &frame->length, sizeof(frame->length));
+        csum = XBeeChecksum(&frame->buffer[XBEE_API_FRAME_HEAD_SZ], frame->length);
+        frame->length += XBEE_API_FRAME_HEAD_SZ + XBEE_API_CHECKSUM_SZ;
+        frame->buffer[frame->length - 1] = csum;
     }
 
     return status;
 }
 
-XBeeAPIStatus_t XBeeBuildTxRequest(const uint8_t *dest64, const uint8_t *dest16, const uint8_t *rfData, size_t rfLen,
-                                   uint8_t **frame, uint8_t *frameID)
+static XBEE_API_FUNC(XBeeAPIBuildATCommand, frame)
 {
-    /* Payload: 0x10 | FrameID | 64-bit Dest | 16-bit Dest | BroadcastRadius | Options | [RF Data] */
+    /* Payload: 0x08 | FrameID | 16-bit ATCmd | [Param] */
+    XBeeAPIATCommandFrame_t *ATCmd = &frame->data.ATCommand;
     XBeeAPIStatus_t status = XBEE_API_TX_SUCCESS;
-    if (rfLen > (MAX_PAYLOAD_SIZE - 14)) // 14 bytes for fixed fields
+    uint8_t *bufferPtr = &frame->buffer[XBEE_API_FRAME_HEAD_SZ];
+
+    if (ATCmd->paramLen > (XBEE_API_MAX_PAYLOAD_SZ))
         status = XBEE_API_TX_ERROR_FRAME_TOO_LARGE;
     else
     {
-        size_t idx = 3;
-        buf[idx++] = XBEE_API_TYPE_TX_REQUEST;
-        idx++; // Leave space for FrameID
-        memcpy(&buf[idx], dest64, 8);
-        idx += 8;
-        memcpy(&buf[idx], dest16, 2);
-        idx += 2;
-        buf[idx++] = 0x00; // Broadcast radius
-        buf[idx++] = 0x00; // Options
-        if (rfLen && rfData)
-        {
-            memcpy(&buf[idx], rfData, rfLen);
-            idx += rfLen;
-        }
-        XBeeBuildAPIFrame(idx);
-        *frame = buf;
-        *frameID = frameIdCntr;
+        /* Copy the data first in case the buffer was not used properly */
+        if (ATCmd->param != bufferPtr + XBEE_API_DATA_HEAD_SZ_AT_COMMAND)
+            memmove(bufferPtr + XBEE_API_DATA_HEAD_SZ_AT_COMMAND, ATCmd->param, ATCmd->paramLen);
+        *bufferPtr = XBEE_API_TYPE_AT_COMMAND;
+        memcpy(bufferPtr + 2, ATCmd->ATCmd, sizeof(ATCmd->ATCmd));
+        frame->length = XBEE_API_DATA_HEAD_SZ_AT_COMMAND + ATCmd->paramLen;
+    }
+
+    return status;
+}
+
+static XBEE_API_FUNC(XBeeAPIBuildTxRequest, frame)
+{
+    /* Payload: 0x10 | FrameID | 64-bit Dest | 16-bit Dest | BroadcastRadius | TxOptions | [PayloadData] */
+    XBeeAPITxRequestFrame_t *txReq = &frame->data.txRequest;
+    XBeeAPIStatus_t status = XBEE_API_TX_SUCCESS;
+    uint8_t *bufferPtr = &frame->buffer[XBEE_API_FRAME_HEAD_SZ];
+
+    if (txReq->payloadDataLen > (XBEE_API_MAX_PAYLOAD_SZ))
+        status = XBEE_API_TX_ERROR_FRAME_TOO_LARGE;
+    else
+    {
+        /* Copy the data first in case the buffer was not used properly */
+        if (txReq->payloadData != bufferPtr + XBEE_API_DATA_HEAD_SZ_TX_REQUEST)
+            memmove(bufferPtr + XBEE_API_DATA_HEAD_SZ_TX_REQUEST, txReq->payloadData, txReq->payloadDataLen);
+        *bufferPtr = XBEE_API_TYPE_TX_REQUEST;
+        bufferPtr += sizeof(frame->type) + sizeof(txReq->frameID);
+        memcpy(bufferPtr, &txReq->dest64, sizeof(txReq->dest64));
+        bufferPtr += sizeof(txReq->dest64);
+        memcpy(bufferPtr, &txReq->dest16, sizeof(txReq->dest16));
+        bufferPtr += sizeof(txReq->dest16);
+        *(bufferPtr++) = txReq->broadcastRadius;
+        *(bufferPtr++) = txReq->txOptions;
+        frame->length = XBEE_API_DATA_HEAD_SZ_TX_REQUEST + txReq->payloadDataLen;
     }
 
     return status;
@@ -129,79 +144,194 @@ XBeeAPIStatus_t XBeeBuildTxRequest(const uint8_t *dest64, const uint8_t *dest16,
 
 // Rx Functions ////////////////////////////////////////////////////////////////////////
 
-uint16_t XBeeRxLen(const uint8_t c)
+XBEE_API_FUNC(XBeeAPIParseFrame, frame)
 {
-    static uint8_t lenIdx = 0, lenBuf[2];
-    static RxState_t rxState = RX_STATE_WAIT_START;
-    uint16_t len = 0;
+    // XBeeAPIRxPacketFrame_t *rxPacket;
+    XBeeAPIStatus_t status = XBEE_API_RX_SUCCESS;
+    static RxState_t rxState = RX_STATE_START;
+    static uint16_t len;
 
     /* Receive frame length */
     switch (rxState)
     {
-    case RX_STATE_WAIT_START: // Wait for start delimiter
-        if (c == XBEE_API_START)
-            rxState = RX_STATE_READ_LEN;
+    case RX_STATE_START:   // Wait for start delimiter
+        frame->length = 0; // Reset frame length for new reception
+        if (frame->buffer[0] == XBEE_API_START)
+            rxState = RX_STATE_LEN_MSB;
         break;
-    case RX_STATE_READ_LEN: // Read length bytes
-        lenBuf[lenIdx++] = c;
-
-        if (lenIdx == 2)
+    case RX_STATE_LEN_MSB: // Read length bytes
+        len = ((uint16_t)frame->buffer[0] << 8);
+        rxState = RX_STATE_LEN_LSB;
+        break;
+    case RX_STATE_LEN_LSB:
+        len |= frame->buffer[0];
+        rxState = RX_STATE_START;
+        if (len == 0)
+            status = XBEE_API_RX_ERROR_FRAME_TOO_LARGE;
+        else if (len > XBEE_API_MAX_DATA_SZ)
+            status = XBEE_API_RX_ERROR_INVALID_FRAME;
+        else
         {
-            lenIdx = 0;
-            len = (lenBuf[0] << 8) | lenBuf[1];
-            rxState = RX_STATE_WAIT_START;
+            frame->length = len + XBEE_API_CHECKSUM_SZ;
+            rxState = RX_STATE_DATA;
+            // rxState = RX_STATE_CHECKSUM;
         }
         break;
+    case RX_STATE_DATA:
+        /* Validate checksum before processing data */
+        if (XBeeChecksum(frame->buffer, frame->length - 1) != frame->buffer[frame->length - 1])
+        {
+            status = XBEE_API_RX_ERROR_INVALID_CHECKSUM;
+            rxState = RX_STATE_START; // Reset for next frame
+        }
+        else
+        {
+            /* Process frame types of interest */
+            frame->type = (XBeeAPIFrameType_t)frame->buffer[0];
+            switch (frame->type)
+            {
+            case XBEE_API_TYPE_AT_RESPONSE:
+                XBeeAPIParseATResponse(frame);
+                break;
+            case XBEE_API_TYPE_TX_STATUS:
+                XBeeAPIParseTxStatus(frame);
+                break;
+            case XBEE_API_TYPE_RX_PACKET:
+                XBeeAPIParseRxPacket(frame);
+                break;
+            default:
+                status = XBEE_API_RX_ERROR_INVALID_FRAME;
+                break;
+            }
+        }
+        break;
+    // case RX_STATE_CHECKSUM:
+    //     break;
     default:
         break;
-    }
-
-    return len;
-}
-
-XBeeAPIStatus_t XBeeParseFrame(const uint8_t *payload, size_t len,
-                               XBeeAPIParsedFrame_t *parsedFrame)
-{
-    uint8_t frameType = payload[0], checksum = payload[len - 1];
-    XBeeAPIStatus_t status = XBEE_API_RX_SUCCESS;
-
-    /* Validate checksum */
-    uint8_t calc = XBeeChecksum(payload, len);
-    if (calc != checksum)
-        status = XBEE_API_RX_ERROR_INVALID_CHECKSUM;
-    else
-    {
-        /* Process frame types of interest */
-        switch (frameType)
-        {
-        case XBEE_API_TYPE_AT_RESPONSE:
-            /* Frame: 0x88 | FrameID | ATChar0 | ATChar1 | [ParamBytes] */
-            parsedFrame->type = frameType;
-            parsedFrame->atResponse.frameId = payload[1];
-            parsedFrame->atResponse.atCmd[0] = payload[2];
-            parsedFrame->atResponse.atCmd[1] = payload[3];
-            parsedFrame->atResponse.param = (uint8_t *)&payload[4];
-            parsedFrame->atResponse.paramLen = len - (1 + 1 + 1 + 1 + 1);
-            break;
-        case XBEE_API_TYPE_TX_STATUS:
-            /* Frame: 0x8B | FrameID | 64-bit dest | 16-bit dest | TransmitRetryCount | DeliveryStatus | DiscoveryStatus */
-            parsedFrame->type = frameType;
-            parsedFrame->txStatus.frameId = payload[1];
-            parsedFrame->txStatus.deliveryStatus = payload[(1 + 8 + 2 + 1)];
-            break;
-        case XBEE_API_TYPE_RX_PACKET:
-            /* Frame: 0x90 | 64-bit src | 16-bit src | RSSI | Options | [RF Data] */
-            parsedFrame->type = frameType;
-            parsedFrame->rxPacket.rssi = payload[(1 + 8 + 2)];
-            parsedFrame->rxPacket.rfData = (uint8_t *)&payload[1 + 8 + 2 + 1 + 1];
-            parsedFrame->rxPacket.rfDataLen = len - (1 + 8 + 2 + 1 + 1 + 1);
-            break;
-        default:
-            break;
-        }
     }
 
     return status;
 }
 
+static XBEE_API_FUNC(XBeeAPIParseATResponse, frame)
+{
+    /* Frame: 0x88 | FrameID | 16-bit ATcmd | CmdStatus | [CmdData] */
+    XBeeAPIATResponseFrame_t *ATResponse = &frame->data.ATResponse;
+    XBeeAPIStatus_t status = XBEE_API_RX_SUCCESS;
+
+    ATResponse->frameID = frame->buffer[1];
+    ATResponse->ATCmd = (uint16_t)((frame->buffer[2] << 8) | frame->buffer[3]);
+    ATResponse->cmdStatus = (XBeeAPICommandStatus_t)frame->buffer[4];
+    ATResponse->cmdData = (uint8_t *)&frame->buffer[5];
+    ATResponse->cmdDataLen = frame->length - 5;
+
+    return status;
+}
+
+static XBEE_API_FUNC(XBeeAPIParseTxStatus, frame)
+{
+    /* Frame: 0x8B | FrameID | DeliveryStatus */
+    XBeeAPITxStatusFrame_t *txStatus = &frame->data.txStatus;
+    XBeeAPIStatus_t status = XBEE_API_RX_SUCCESS;
+
+    txStatus->frameID = frame->buffer[1];
+    txStatus->deliveryStatus = frame->buffer[2];
+
+    return status;
+}
+
+static XBEE_API_FUNC(XBeeAPIParseRxPacket, frame)
+{
+    /* Frame: 0x90 | 64-bit src | 16-bit src | RxOptions | [RF Data] */
+    XBeeAPIRxPacketFrame_t *rxPacket = &frame->data.rxPacket;
+    XBeeAPIStatus_t status = XBEE_API_RX_SUCCESS;
+
+    memcpy(&rxPacket->src64, &frame->buffer[1], sizeof(rxPacket->src64));
+    memcpy(&rxPacket->src16, &frame->buffer[9], sizeof(rxPacket->src16));
+    rxPacket->rxOptions = frame->buffer[11];
+    rxPacket->rxData = &frame->buffer[12];
+    rxPacket->rxDataLen = frame->length - 12;
+
+    return status;
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////
+
+static uint8_t XBeeChecksum(const uint8_t *payload, uint16_t len)
+{
+    uint8_t sum = 0;
+
+    for (uint16_t i = 0; i < len; i++)
+        sum += payload[i];
+
+    return 0xFF - sum;
+}
+
+// uint8_t XBeeGetNextFrameID(void)
+// {
+//     static uint8_t frameId = 0; // Frame ID counter for tracking frames
+
+//     if (++frameId == 0)
+//         frameId = 1; // Avoid frame ID 0 which is reserved for no response
+
+//     return frameId;
+// }
+
+// void XbeeInitTxTable(void)
+// {
+//     for (int i = 0; i < XBEE_MAX_PENDING_FRAMES; i++)
+//     {
+//         txTable[i].isActive = 0;
+//         txTable[i].txStatus.frameId = 0;
+//         txTable[i].txStatus.deliveryStatus = 0;
+//     }
+// }
+
+// void XbeeResetTxTable(void)
+// {
+//     XbeeInitTxTable();
+// }
+
+// void XbeeAddTxFrame(uint8_t frameId)
+// {
+//     for (int i = 0; i < XBEE_MAX_PENDING_FRAMES; i++)
+//         if (!txTable[i].isActive)
+//         {
+//             txTable[i].txStatus.frameId = frameId;
+//             txTable[i].txStatus.deliveryStatus = 0;
+//             txTable[i].isActive = 1;
+//             break;
+//         }
+// }
+
+// void XbeeUpdateTxStatus(XBeeAPITxStatusFrame_t *txStatus)
+// {
+//     for (int i = 0; i < XBEE_MAX_PENDING_FRAMES; i++)
+//         if (txTable[i].isActive && txTable[i].txStatus.frameId == txStatus->frameId)
+//         {
+//             txTable[i].txStatus.deliveryStatus = txStatus->deliveryStatus;
+//             // txTable[i].isActive = 0; // Mark as inactive after receiving status
+//             break;
+//         }
+// }
+
+// void XbeeGetTxStatus(uint8_t frameId, XBeeAPITxStatusFrame_t *txStatus)
+// {
+//     for (int i = 0; i < XBEE_MAX_PENDING_FRAMES; i++)
+//         if (txTable[i].isActive && txTable[i].txStatus.frameId == frameId)
+//         {
+//             *txStatus = txTable[i].txStatus;
+//             break;
+//         }
+// }
+
+// void XbeeRemoveTxFrame(uint8_t frameId)
+// {
+//     for (int i = 0; i < XBEE_MAX_PENDING_FRAMES; i++)
+//         if (txTable[i].isActive && txTable[i].txStatus.frameId == frameId)
+//         {
+//             txTable[i].isActive = 0;
+//             break;
+//         }
+// }
