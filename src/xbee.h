@@ -59,6 +59,8 @@ typedef enum
 
 typedef enum
 {
+    XBEE_API_INIT_SUCCESS,
+    XBEE_API_INIT_ERROR,
     // XBEE_API_RX_WAITING_START,
     // XBEE_API_RX_READING,
     XBEE_API_RX_SUCCESS,
@@ -69,6 +71,70 @@ typedef enum
     XBEE_API_TX_SUCCESS,
     XBEE_API_TX_ERROR_FRAME_TOO_LARGE
 } XBeeAPIStatus_t;
+
+typedef enum
+{
+    /* Special commands */
+    XBEE_API_AT_CMD_AC, // Apply Changes
+    XBEE_API_AT_CMD_FR, // Software Reset
+    XBEE_API_AT_CMD_WR, // Write
+
+    /* MAC/PHY commands */
+    XBEE_API_AT_CMD_HP, // Preamble ID
+    XBEE_API_AT_CMD_IP, // Network ID
+    XBEE_API_AT_CMD_MT, // Broadcast Multi-Transmits
+    XBEE_API_AT_CMD_BR, // RF Data Rate
+    XBEE_API_AT_CMD_PL, // TX Power Level
+    XBEE_API_AT_CMD_RR, // Unicast Mac Retries
+
+    /* Diagnostic commands - MAC statistics and timeouts */
+    XBEE_API_AT_CMD_BC, // Bytes Transmitted
+    XBEE_API_AT_CMD_DB, // Last Packet RSSI
+
+    /* Network commands */
+    XBEE_API_AT_CMD_CE, // Routing / Messaging Mode
+
+    /* Addressing commands */
+    XBEE_API_AT_CMD_SH, // Serial Number High
+    XBEE_API_AT_CMD_SL, // Serial Number Low
+    XBEE_API_AT_CMD_DH, // Destination Address High
+    XBEE_API_AT_CMD_DL, // Destination Address Low
+    XBEE_API_AT_CMD_TO, // Transmit Options
+    XBEE_API_AT_CMD_NI, // Node Identifier
+    XBEE_API_AT_CMD_NT, // Network Discovery Back-off
+    XBEE_API_AT_CMD_NO, // Network Discovery Options
+    XBEE_API_AT_CMD_CI, // Cluster ID
+
+    /* Addressing discovery/configuration commands */
+    XBEE_API_AT_CMD_DN, // Discover Node
+    XBEE_API_AT_CMD_ND, // Network Discover
+    XBEE_API_AT_CMD_FN, // Find Neighbors
+
+    /* Security commands */
+    XBEE_API_AT_CMD_EE, // Encryption Enable
+    XBEE_API_AT_CMD_KY, // AES Encryption Key
+
+    /* Serial interfacing commands */
+    XBEE_API_AT_CMD_BD, // Interface Data Rate
+    XBEE_API_AT_CMD_NB, // Parity
+    XBEE_API_AT_CMD_SB, // Stop Bits
+    XBEE_API_AT_CMD_AP, // API Enable
+    XBEE_API_AT_CMD_AO, // API Options
+
+    /* Sleep commands */
+    XBEE_API_AT_CMD_SM, // Sleep Mode
+    XBEE_API_AT_CMD_SO, // Sleep Options
+
+    /* Command mode options */
+    XBEE_API_AT_CMD_CC, // Command Sequence Character
+    XBEE_API_AT_CMD_CT, // Command Mode Timeout
+    XBEE_API_AT_CMD_CN, // Exit Command Mode
+
+    /* Firmware version/information commands */
+    XBEE_API_AT_CMD_NP, // Maximum Packet Payload Bytes
+
+    XBEE_API_AT_CMD_UNKNOWN // Unknown command
+} XBeeAPIATCommand_t;
 
 typedef enum
 {
@@ -91,11 +157,30 @@ typedef enum
     XBEE_API_TX_STATUS_CONECTION_REFUSED = 0x80
 } XBeeAPIDeliveryStatus_t;
 
+// typedef struct
+// {
+//     // uint32_t networkID; // Network ID (PAN ID)
+//     // uint8_t rfDataRate; // RF data rate in kbps
+//     // uint8_t retries;    // Unicast MAC retries
+//     // uint8_t txPower;    // Transmission power level
+
+//     uint64_t dest64;    // 64-bit destination address
+//     uint16_t dest16;    // 16-bit destination address
+//     uint16_t txOptions; // Transmission options (bitmask)
+
+//     // uint8_t encryptionEnabled; // Flag indicating if encryption is enabled
+//     // uint8_t encryptionKey[64]; // AES encryption key (256-bit)
+
+//     // uint32_t baudRate; // Baud rate for serial communication
+//     // uint8_t parity;    // Parity setting (0: None, 1: Even, 2: Odd)
+//     // uint8_t stopBits;  // Number of stop bits (1 or 2)
+// } XBeeAPIConfig_t;
+
 typedef struct
 {
     uint8_t frameID;
-    uint8_t ATCmd[2]; // 16-bit AT command
-    uint8_t *param;   // Optional parameter bytes
+    XBeeAPIATCommand_t ATCmd;
+    uint8_t *param; // Optional parameter bytes
     uint8_t paramLen;
 } XBeeAPIATCommandFrame_t;
 
@@ -175,22 +260,23 @@ typedef struct
     /* NOTE: XBee devices are Big-Endian */
 } XBeeAPIFrame_t;
 
-// Tx Functions ////////////////////////////////////////////////////////////////////////
+// Config Functions ////////////////////////////////////////////////////////////////////
 
 /**
- * @brief Builds an XBee API frame for transmission
- * @param[in] frame Pointer to the XBeeAPIFrame_t structure to be built
+ * @brief Initializes the XBee API
+ * @param[in] config Pointer to the XBee API configuration structure
  * @return XBeeAPIStatus_t The status of the operation
  */
-XBEE_API_FUNC_PROTO(XBeeAPIBuildFrame, frame);
+// XBeeAPIStatus_t XBeeAPIInit(XBeeAPIConfig_t *config);
 
-// Rx Functions ////////////////////////////////////////////////////////////////////////
+// TxRx Functions //////////////////////////////////////////////////////////////////////
 
 /**
- * @brief Parses an incoming XBee API frame
- * @param[in] frame Pointer to the frame to be parsed
- * @return XBeeAPIStatus_t Status of the parsing operation
+ * @brief Builds/Parses an XBee API frame
+ * @param[in] frame Pointer to the XBeeAPIFrame_t structure to be built/parsed
+ * @return XBeeAPIStatus_t The status of the build/parsing operation
  */
+XBEE_API_FUNC_PROTO(XBeeAPIBuildFrame, frame);
 XBEE_API_FUNC_PROTO(XBeeAPIParseFrame, frame);
 
 ////////////////////////////////////////////////////////////////////////////////////////

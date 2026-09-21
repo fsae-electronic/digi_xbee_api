@@ -10,7 +10,7 @@
 
 // Headers /////////////////////////////////////////////////////////////////////////////
 
-// #include <string.h>
+#include <string.h>
 
 #include "xbee.h"
 
@@ -38,10 +38,6 @@ typedef enum
 //     uint8_t isActive;
 // } XBeeAPITxTracker_t;
 
-// Local Variables /////////////////////////////////////////////////////////////////////
-
-// XBeeAPITxTracker_t txTable[XBEE_MAX_PENDING_FRAMES];
-
 // Prototypes //////////////////////////////////////////////////////////////////////////
 
 /**
@@ -56,12 +52,44 @@ static XBEE_API_FUNC_PROTO(XBeeAPIParseTxStatus, frame);
 static XBEE_API_FUNC_PROTO(XBeeAPIParseRxPacket, frame);
 
 /**
+ * @brief Converts an AT command enum to its corresponding string representation
+ * @param command The AT command enum to convert
+ * @return const char* The string representation of the AT command
+ */
+static const char *XBeeATCommandToString(XBeeAPIATCommand_t cmd);
+
+/**
  * @brief Calculates the checksum for a payload to ensure data integrity
  * @param[in] frame Pointer to the data (starting after the frame header)
  * @param[in] len Length of the data
  * @return uint8_t The calculated checksum value
  */
 static uint8_t XBeeChecksum(const uint8_t *payload, uint16_t len);
+
+// Local Variables /////////////////////////////////////////////////////////////////////
+
+// static XBeeAPIConfig_t config;
+// static uint8_t init = 0;
+// static XBeeAPITxTracker_t txTable[XBEE_MAX_PENDING_FRAMES];
+
+/* TODO: Use frameID to support multiple responses */
+static XBeeAPIATCommand_t lastCmd = XBEE_API_AT_CMD_UNKNOWN;
+
+// Config Functions ////////////////////////////////////////////////////////////////////
+
+// XBeeAPIStatus_t XBeeAPIInit(XBeeAPIConfig_t *cfg)
+// {
+//     XBeeAPIStatus_t status = XBEE_API_INIT_ERROR;
+
+//     if ((!init) && (cfg != NULL))
+//     {
+//         memcpy(&config, cfg, sizeof(XBeeAPIConfig_t));
+//         init = 1;
+//         status = XBEE_API_INIT_SUCCESS;
+//     }
+
+//     return status;
+// }
 
 // Tx Functions ////////////////////////////////////////////////////////////////////////
 
@@ -73,10 +101,10 @@ XBEE_API_FUNC(XBeeAPIBuildFrame, frame)
     switch (frame->type)
     {
     case XBEE_API_TYPE_AT_COMMAND:
-        status = XBeeBuildAT(frame);
+        status = XBeeAPIBuildATCommand(frame);
         break;
     case XBEE_API_TYPE_TX_REQUEST:
-        status = XBeeBuildTxRequest(frame);
+        status = XBeeAPIBuildTxRequest(frame);
         break;
     }
 
@@ -98,6 +126,7 @@ static XBEE_API_FUNC(XBeeAPIBuildATCommand, frame)
     XBeeAPIATCommandFrame_t *ATCmd = &frame->data.ATCommand;
     XBeeAPIStatus_t status = XBEE_API_TX_SUCCESS;
     uint8_t *bufferPtr = &frame->buffer[XBEE_API_FRAME_HEAD_SZ];
+    const char *cmdStr = XBeeATCommandToString(ATCmd->ATCmd);
 
     if (ATCmd->paramLen > (XBEE_API_MAX_PAYLOAD_SZ))
         status = XBEE_API_TX_ERROR_FRAME_TOO_LARGE;
@@ -107,7 +136,8 @@ static XBEE_API_FUNC(XBeeAPIBuildATCommand, frame)
         if (ATCmd->param != bufferPtr + XBEE_API_DATA_HEAD_SZ_AT_COMMAND)
             memmove(bufferPtr + XBEE_API_DATA_HEAD_SZ_AT_COMMAND, ATCmd->param, ATCmd->paramLen);
         *bufferPtr = XBEE_API_TYPE_AT_COMMAND;
-        memcpy(bufferPtr + 2, ATCmd->ATCmd, sizeof(ATCmd->ATCmd));
+        memcpy(bufferPtr + 2, cmdStr, sizeof(cmdStr));
+        lastCmd = ATCmd->ATCmd;
         frame->length = XBEE_API_DATA_HEAD_SZ_AT_COMMAND + ATCmd->paramLen;
     }
 
@@ -177,7 +207,7 @@ XBEE_API_FUNC(XBeeAPIParseFrame, frame)
             // rxState = RX_STATE_CHECKSUM;
         }
         break;
-    case RX_STATE_DATA:
+    case RX_STATE_DATA: // Parse all remaining bytes
         /* Validate checksum before processing data */
         if (XBeeChecksum(frame->buffer, frame->length - 1) != frame->buffer[frame->length - 1])
         {
@@ -236,7 +266,7 @@ static XBEE_API_FUNC(XBeeAPIParseTxStatus, frame)
     XBeeAPIStatus_t status = XBEE_API_RX_SUCCESS;
 
     txStatus->frameID = frame->buffer[1];
-    txStatus->deliveryStatus = frame->buffer[2];
+    txStatus->deliveryStatus = (XBeeAPIDeliveryStatus_t)frame->buffer[2];
 
     return status;
 }
@@ -258,11 +288,118 @@ static XBEE_API_FUNC(XBeeAPIParseRxPacket, frame)
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
+static const char *XBeeATCommandToString(XBeeAPIATCommand_t cmd)
+{
+    const char *cmdStr = NULL;
+
+    switch (cmd)
+    {
+    case XBEE_API_AT_CMD_AC:
+        cmdStr = "AC";
+        break;
+    case XBEE_API_AT_CMD_FR:
+        cmdStr = "FR";
+        break;
+    case XBEE_API_AT_CMD_WR:
+        cmdStr = "WR";
+        break;
+    case XBEE_API_AT_CMD_HP:
+        cmdStr = "HP";
+        break;
+    case XBEE_API_AT_CMD_IP:
+        cmdStr = "IP";
+        break;
+    case XBEE_API_AT_CMD_MT:
+        cmdStr = "MT";
+        break;
+    case XBEE_API_AT_CMD_BR:
+        cmdStr = "BR";
+        break;
+    case XBEE_API_AT_CMD_PL:
+        cmdStr = "PL";
+        break;
+    case XBEE_API_AT_CMD_RR:
+        cmdStr = "RR";
+        break;
+    case XBEE_API_AT_CMD_BC:
+        cmdStr = "BC";
+        break;
+    case XBEE_API_AT_CMD_DB:
+        cmdStr = "DB";
+        break;
+    case XBEE_API_AT_CMD_CE:
+        cmdStr = "CE";
+        break;
+    case XBEE_API_AT_CMD_SH:
+        cmdStr = "SH";
+        break;
+    case XBEE_API_AT_CMD_SL:
+        cmdStr = "SL";
+        break;
+    case XBEE_API_AT_CMD_DH:
+        cmdStr = "DH";
+        break;
+    case XBEE_API_AT_CMD_DL:
+        cmdStr = "DL";
+        break;
+    case XBEE_API_AT_CMD_TO:
+        cmdStr = "TO";
+        break;
+    case XBEE_API_AT_CMD_NI:
+        cmdStr = "NI";
+        break;
+    case XBEE_API_AT_CMD_NT:
+        cmdStr = "NT";
+        break;
+    case XBEE_API_AT_CMD_NO:
+        cmdStr = "NO";
+        break;
+    case XBEE_API_AT_CMD_CI:
+        cmdStr = "CI";
+        break;
+    case XBEE_API_AT_CMD_DN:
+        cmdStr = "DN";
+        break;
+    case XBEE_API_AT_CMD_ND:
+        cmdStr = "ND";
+        break;
+    case XBEE_API_AT_CMD_FN:
+        cmdStr = "FN";
+        break;
+    case XBEE_API_AT_CMD_EE:
+        cmdStr = "EE";
+        break;
+    case XBEE_API_AT_CMD_KY:
+        cmdStr = "KY";
+        break;
+    case XBEE_API_AT_CMD_BD:
+        cmdStr = "BD";
+        break;
+    case XBEE_API_AT_CMD_NB:
+        cmdStr = "NB";
+        break;
+    case XBEE_API_AT_CMD_SB:
+        cmdStr = "SB";
+        break;
+    case XBEE_API_AT_CMD_AP:
+        cmdStr = "AP";
+        break;
+    case XBEE_API_AT_CMD_AO:
+        cmdStr = "AO";
+        break;
+    default:
+        break;
+    }
+
+    return cmdStr;
+}
+
 static uint8_t XBeeChecksum(const uint8_t *payload, uint16_t len)
 {
     uint8_t sum = 0;
+    uint16_t i = 0;
 
-    for (uint16_t i = 0; i < len; i++)
+    for (; i < len; i++)
         sum += payload[i];
 
     return 0xFF - sum;
